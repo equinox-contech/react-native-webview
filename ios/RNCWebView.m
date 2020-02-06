@@ -196,19 +196,6 @@ static NSDictionary* customCertificatesForHost;
     }
 
     if(_sharedCookiesEnabled) {
-      // More info to sending cookies with WKWebView
-      // https://stackoverflow.com/questions/26573137/can-i-set-the-cookies-to-be-used-by-a-wkwebview/26577303#26577303
-      if (@available(iOS 11.0, *)) {
-        // Set Cookies in iOS 11 and above, initialize websiteDataStore before setting cookies
-        // See also https://forums.developer.apple.com/thread/97194
-        // check if websiteDataStore has not been initialized before
-        if(!_incognito && !_cacheEnabled) {
-          wkWebViewConfig.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
-        }
-        for (NSHTTPCookie *cookie in [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookies]) {
-          [wkWebViewConfig.websiteDataStore.httpCookieStore setCookie:cookie completionHandler:nil];
-        }
-      } else {
         NSMutableString *script = [NSMutableString string];
 
         // Clear all existing cookies in a direct called function. This ensures that no
@@ -233,11 +220,20 @@ static NSDictionary* customCertificatesForHost;
         // javascript error will break the web content javascript.
           // Generates JS: document.cookie = "key=value; Path=/; Expires=Thu, 01 Jan 20xx 00:00:01 GMT;"
         // for each cookie which is available in the application context.
+        
+        NSURLRequest *request = [RCTConvert NSURLRequest:self.source];
+        NSArray<NSHTTPCookie *> *cookies = (request != nil && request.URL != nil) ?
+            [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:request.URL]
+            : [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookies];
+           
         [script appendString:@"(function () {\n"];
-        for (NSHTTPCookie *cookie in [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookies]) {
+        for (NSHTTPCookie *cookie in cookies) {
           [script appendFormat:@"document.cookie = %@ + '=' + %@",
             RCTJSONStringify(cookie.name, NULL),
             RCTJSONStringify(cookie.value, NULL)];
+          if (cookie.domain) {
+            [script appendFormat:@" + '; Domain=' + %@", RCTJSONStringify(cookie.domain, NULL)];
+          }
           if (cookie.path) {
             [script appendFormat:@" + '; Path=' + %@", RCTJSONStringify(cookie.path, NULL)];
           }
@@ -246,15 +242,17 @@ static NSDictionary* customCertificatesForHost;
               cookie.expiresDate.timeIntervalSince1970 * 1000
             ];
           }
+          if (cookie.isSecure) {
+            [script appendString:@"; + ' secure'"];
+          }
           [script appendString:@";\n"];
         }
         [script appendString:@"})();\n"];
 
         WKUserScript* cookieInScript = [[WKUserScript alloc] initWithSource:script
                                                               injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-                                                           forMainFrameOnly:YES];
+                                                           forMainFrameOnly:NO];
         [wkWebViewConfig.userContentController addUserScript:cookieInScript];
-      }
     }
 
     _webView = [[WKWebView alloc] initWithFrame:self.bounds configuration: wkWebViewConfig];
@@ -1026,18 +1024,14 @@ static NSDictionary* customCertificatesForHost;
   NSURLRequest *request = [RCTConvert NSURLRequest:self.source];
 
   // If sharedCookiesEnabled we automatically add all application cookies to the
-  // http request. This is automatically done on iOS 11+ in the WebView constructor.
-  // Se we need to manually add these shared cookies here only for iOS versions < 11.
+  // http request. Due to a bug in WebKit we need to manually add these
+  // shared cookies here
   if (_sharedCookiesEnabled) {
-    if (@available(iOS 11.0, *)) {
-      // see WKWebView initialization for added cookies
-    } else {
       NSArray *cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:request.URL];
       NSDictionary<NSString *, NSString *> *cookieHeader = [NSHTTPCookie requestHeaderFieldsWithCookies:cookies];
       NSMutableURLRequest *mutableRequest = [request mutableCopy];
       [mutableRequest setAllHTTPHeaderFields:cookieHeader];
       return mutableRequest;
-    }
   }
   return request;
 }
